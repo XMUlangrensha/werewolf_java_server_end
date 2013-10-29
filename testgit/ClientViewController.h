@@ -9,5 +9,5 @@
 #import <UIKit/UIKit.h>
 
 @interface ClientViewController : UIViewController
-
+@property int java;
 @end

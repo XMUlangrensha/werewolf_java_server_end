@@ -13,7 +13,7 @@
 @end
 
 @implementation ClientViewController
-
+@synthesize java;
 - (void)viewDidLoad
 {
     [super viewDidLoad];
