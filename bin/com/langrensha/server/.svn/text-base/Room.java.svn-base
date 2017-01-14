@@ -1,0 +1,1078 @@
+package com.langrensha.server;
+
+import java.awt.TextArea;
+import java.io.IOException;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.net.SocketException;
+import java.sql.Time;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.List;
+import java.util.Random;
+import java.util.Scanner;
+import java.util.Stack;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonParser;
+import com.langrensha.action.PlayerAction;
+import com.langrensha.client.Event;
+import com.langrensha.model.*;
+import com.langrensha.utility.Config;
+import com.langrensha.utility.Message;
+
+public class Room implements Runnable {
+	private Random random;
+	private Gson gson;
+	private JsonParser parser;
+	private PlayerAction action;
+	private ServerSocket server;
+	private int room_num;
+	private int[] initRoleCount = new int[8];
+	private int[] waitingRoles;
+	private int player_max = 16;// 房间预设人数
+	private int player_count = 0;// 已加入房间人数
+	private boolean[][] voteInfos;// voteInfos[voteId][toVoteId]
+	private boolean hasLastWords = true;
+	private int deadSpeakerCount = 0;
+	private List<Integer> deadSpks = new ArrayList<Integer>();
+
+	// for test
+	private TextArea area;
+
+	public Room(TextArea area) {
+		this.area = area;
+		try {
+			// 创建服务器的connection socket
+			server = new ServerSocket(12345, 2);
+		} catch (IOException ioException) {
+			ioException.printStackTrace();
+			System.exit(1);
+		}
+		gson = new GsonBuilder().excludeFieldsWithoutExposeAnnotation()
+				.create();
+		parser = new JsonParser();
+		action = new PlayerAction();
+		random = new Random();
+		waitingRoles = new int[2];
+		initRoleCount = new int[8];
+	}
+
+	private void display(String msg) {
+		Calendar ca = Calendar.getInstance();
+		String time = ca.get(Calendar.MINUTE) + ":" + ca.get(Calendar.SECOND)
+				+ "   ";
+		area.append(time + msg + "\n");
+	}
+
+	public void run() {
+		display("开启房间");
+
+		EnterRoom();
+		sleep(Config.SLEEP_TIME);
+
+		AboutRole();
+		sleep(Config.SLEEP_TIME);
+		
+		if (Config.HAS_SHERIFF) {
+			 ReadyDay();
+			 sleep(Config.SLEEP_TIME);
+		}
+		
+		ReadyNight();
+		sleep(Config.SLEEP_TIME);
+		
+		int gameResult = Event.ON_GAME;
+		while (true) {
+			gameResult = DayAndNight();
+			if (gameResult != Event.ON_GAME)
+				break;
+			sleep(Config.SLEEP_TIME);
+		}
+		
+		sendAll(new Message(Event.SERVER_GAME_RESULT, gameResult));
+	}
+
+	private void EnterRoom() {
+		Message msg;
+		try {
+			while (player_count < player_max) {
+				Socket playerSocket = server.accept();
+				// 设置读取超时时间为10秒
+				try {
+					playerSocket.setSoTimeout(Config.TIMER_OUT * 1000);
+				} catch (SocketException e1) {
+					e1.printStackTrace();
+				}
+
+				Scanner input = new Scanner(playerSocket.getInputStream());
+				String message = input.nextLine();
+
+				// 输出消息
+				display("收到：" + message);
+
+				JsonElement element = parser.parse(message);
+				if (element.isJsonArray()) {
+					JsonArray array = parser.parse(message).getAsJsonArray();
+					// 第1个字段是消息类型
+					byte event = gson.fromJson(array.get(0), Byte.class);
+					if (event == Event.CLIENT_INFO) {
+						// 用户信息消息
+						// 第一个字段是玩家类
+						Player p = gson.fromJson(array.get(1), Player.class);
+						p.setSocket(playerSocket);
+						if (p.isOwner()) {
+							// 如果是房主
+							// 第二个字段是房间人数
+							player_max = gson.fromJson(array.get(2),
+									Integer.class);
+							// 生成房号
+							// room_num = random.nextInt(999);
+							room_num = 999;
+
+							// 房主加入房间
+							player_count++;// 从1开始
+							p.setId(player_count);
+							action.addPlayer(p);
+							// 通知房主房号
+							msg = new Message(Event.SERVER_ROOM, room_num,
+									player_count);
+							action.send(player_count, msg);
+						} else {
+							// 如果是房客
+							// 第二个字段是房号
+							int roomNum = gson.fromJson(array.get(2),
+									Integer.class);
+
+							if (room_num == roomNum) {
+								// 房客加入房间
+								player_count++;// 从1开始
+								p.setId(player_count);
+								action.addPlayer(p);
+								msg = new Message(Event.SERVER_ROOM, room_num,
+										player_count);
+								action.send(player_count, msg);
+							}
+						}
+					}
+				}// end if
+				else {
+					continue;
+				}
+				msg = new Message(Event.SERVER_JOINED_COUNT, player_count,
+						player_max);
+				sendAll(msg);
+			}// end while
+
+		}// end try
+		catch (IOException e) {
+			e.printStackTrace();
+		}// end catch
+	}
+
+	private void AboutRole() {
+		/* 设置角色 */
+		// TO-DO 确定游戏角色数
+
+		/* 根据玩家人数设置各个角色人数 */
+		int cupidCount = 0;
+		int hunterCount = 0;
+		int wolfCount = 0;
+		int thiefCount = 0;
+		int seerCount = 0;
+		int witchCount = 0;
+		int villagerCount = 0;
+		switch (player_max) {
+		case 6:
+		case 7:
+		case 8:
+			wolfCount = 2;
+			witchCount = 1;
+			cupidCount = 1;
+			villagerCount = player_max - wolfCount - witchCount - cupidCount;
+			break;
+		case 9:
+		case 10:
+		case 11:
+			wolfCount = 3;
+			witchCount = 1;
+			cupidCount = 1;
+			seerCount = 1;
+			villagerCount = player_max - wolfCount - witchCount - cupidCount
+					- seerCount;
+			break;
+		case 12:
+		case 13:
+			wolfCount = 4;
+			witchCount = 1;
+			cupidCount = 1;
+			seerCount = 1;
+			hunterCount = 1;
+			villagerCount = player_max - wolfCount - witchCount - cupidCount
+					- seerCount - hunterCount;
+			break;
+		case 14:
+		case 15:
+		case 16:
+			wolfCount = 4;
+			witchCount = 1;
+			cupidCount = 1;
+			seerCount = 1;
+			hunterCount = 1;
+			thiefCount = 1;
+			villagerCount = player_max - wolfCount - witchCount - cupidCount
+					- seerCount - hunterCount - thiefCount;
+		default:
+			wolfCount = 1;
+			seerCount = 1;
+			villagerCount = player_max - wolfCount - seerCount;
+			break;
+
+		}
+		 initRoleCount[Role.CUPID] = cupidCount;
+		 initRoleCount[Role.HUNTER] = hunterCount;
+		 initRoleCount[Role.SEER] = seerCount;
+		 initRoleCount[Role.THIEF] = thiefCount;
+		 initRoleCount[Role.VILLAGER] = villagerCount;
+		 initRoleCount[Role.WITCH] = witchCount;
+		 initRoleCount[Role.WOLF] = wolfCount;
+		// for test
+		// initRoleCount[Role.CUPID] = 0;
+		// initRoleCount[Role.HUNTER] = 0;
+		// initRoleCount[Role.SEER] = 0;
+		// initRoleCount[Role.THIEF] = 0;
+		// initRoleCount[Role.VILLAGER] = 0;
+		// initRoleCount[Role.WITCH] = 1;
+		// initRoleCount[Role.WOLF] = 1;
+
+		/* 角色分配 */
+		if (initRoleCount[Role.THIEF] > 0) {
+			// 有盗贼，加2张村民
+			initRoleCount[Role.VILLAGER] += 2;
+			// 随机抽出两个角色待盗贼选择
+			int roleId = -1;
+			int sum_thief = 0;
+			for (int j = 1; j <= Role.THIEF; j++)
+				sum_thief += initRoleCount[j];
+
+			display("盗贼：" + sum_thief);
+
+			int sum1, sum2;
+			do {
+				sum1 = random.nextInt(player_max + 2) + 1;// [0,4]+1=[1,5]
+			} while (sum1 == sum_thief);
+			display("抽到1：" + sum1);
+
+			sum2 = sum1;
+			for (int j = 1; j <= 7; j++) {
+				if (sum1 <= initRoleCount[j]) {
+					roleId = j;
+					break;
+				} else
+					sum1 -= initRoleCount[j];
+			}
+
+			display("角色1：" + roleId);
+			waitingRoles[0] = roleId;
+			initRoleCount[roleId]--;
+
+			sum1 = sum2;
+			do {
+				sum2 = random.nextInt(player_max + 2) + 1;
+			} while (sum2 == sum1 || sum2 == sum_thief);
+			display("抽到2：" + sum2);
+			for (int j = 1; j <= 7; j++) {
+				if (sum2 <= initRoleCount[j]) {
+					roleId = j;
+					break;
+				} else
+					sum2 -= initRoleCount[j];
+			}
+			display("角色2：" + roleId);
+			waitingRoles[1] = roleId;
+			initRoleCount[roleId]--;
+		}
+		List<Integer> temp = new ArrayList<Integer>();
+		distributeRole(Role.CUPID, temp);
+		distributeRole(Role.HUNTER, temp);
+		distributeRole(Role.SEER, temp);
+		distributeRole(Role.THIEF, temp);
+		distributeRole(Role.VILLAGER, temp);
+		distributeRole(Role.WITCH, temp);
+		distributeRole(Role.WOLF, temp);
+
+		/* 通知结果 */
+		Message msg;
+		// 所有角色信息消息
+		msg = new Message(Event.SERVER_ALL_ROLE_INFO, initRoleCount);
+		sendAll(msg);
+
+		// // 所有玩家信息消息
+		// msg = new Message(Event.SERVER_ALL_PLAYER_INFO,
+		// action.toRoleNames());
+		// sendAll(msg);
+
+		ExecutorService service = Executors.newFixedThreadPool(1);
+		for (int i = 1; i <= player_max; i++) {
+			service.execute(new OutputRunnable(i, new Message(
+					Event.SERVER_ROLE_INFO, action.getPlayer(i).getRole())));
+		}
+		service.shutdown();
+		try {
+			service.awaitTermination(20, TimeUnit.SECONDS);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+
+		display("角色完毕");
+	}
+
+	private void ReadyDay() {
+		voteInfos = new boolean[player_max + 1][player_max + 1];
+		for (int i = 0; i <= player_max; i++)
+			for (int j = 0; j <= player_max; j++)
+				if (voteInfos[i][j])
+					voteInfos[i][j] = false;
+		sendAll(new Message(Event.SERVER_ELECTION_START));
+		// 警长报名
+		recvAlive(Event.CLIENT_ELECTION_ACTION);
+		display("警长报名完毕");
+
+		Stack<Integer> maxVoterIds = new Stack<Integer>(); // 最多票的ids
+
+		// 候选人发言
+		do {
+			maxVoterIds.clear();
+			display("候选人发言");
+			boolean hasCandidates = false;
+			for (int toVoteId = 1; toVoteId <= player_max; toVoteId++) {
+				if (voteInfos[0][toVoteId]) {
+					if (!hasCandidates)
+						hasCandidates = true;
+					sendAll(new Message(Event.SERVER_SPEECH_START, toVoteId));
+					String message = action.recv(toVoteId);
+					if (message != "") {
+						display("收到 " + toVoteId + ":" + message);
+						JsonElement element = parser.parse(message);
+						if (element.isJsonArray()) {
+							JsonArray array = parser.parse(message)
+									.getAsJsonArray();
+							// 第1个字段是消息类型
+							byte event = gson
+									.fromJson(array.get(0), Byte.class);
+							if (event == Event.CLIENT_SPEECH_OVER) {
+								display("玩家" + toVoteId + "发言完毕");
+							}
+						}
+					}
+				}
+			}
+			if (!hasCandidates)// 如果没有候选人
+			{
+				sendAll(new Message(Event.SERVER_SHERRIF_ID, 0));
+				return;
+			}
+
+			// 村民投票
+			sendAll(new Message(Event.SERVER_VOTE_START, voteInfos[0]));
+			recvAlive(Event.CLIENT_VOTE_ACTION);
+			display("村民投票完毕");
+
+			// 投票结果
+			int max = -1;
+			for (int toVoteId = 1; toVoteId <= player_max; toVoteId++) {
+				if (voteInfos[0][toVoteId]) {
+					int count = 0;
+					for (int voteId = 1; voteId <= player_max; voteId++) {
+						if (voteInfos[voteId][toVoteId]) {
+							count++;
+						}
+					}
+					if (count > max) {
+						max = count;
+						maxVoterIds.clear();
+						maxVoterIds.push(toVoteId);
+					} else if (count == max) {
+						maxVoterIds.push(toVoteId);
+					}
+				}
+			}
+			display("公布投票结果");
+			String text = "\n";
+			for (int i = 0; i <= player_max; i++) {
+				for (int j = 0; j <= player_max; j++)
+					if (voteInfos[i][j])
+						text += "1 ";
+					else
+						text += "0 ";
+				text += "\n";
+			}
+			display(text);
+
+			sendAll(new Message(Event.SERVER_VOTE_OVER, voteInfos));
+			// 平局，清空，平局人作为新的候选人
+			if (maxVoterIds.size() > 1) {
+				for (int i = 0; i <= player_max; i++)
+					for (int j = 0; j <= player_max; j++)
+						if (voteInfos[i][j])
+							voteInfos[i][j] = false;
+				for (int maxId : maxVoterIds) {
+					voteInfos[0][maxId] = true;
+				}
+			}
+		} while (maxVoterIds.size() > 1);
+
+		// 公布警长
+		int sheriffId = maxVoterIds.pop();
+		if (action.setSheriff(sheriffId))
+			sendAll(new Message(Event.SERVER_SHERRIF_ID, sheriffId));
+	}
+
+	/**
+	 * 第一天夜晚准备阶段，盗贼、丘比特
+	 */
+	public void ReadyNight() {
+		int today = action.today();
+		sendAll(new Message(Event.SERVER_CLOSE_EYES, today));
+		/* 盗贼行动 */
+		if (initRoleCount[Role.THIEF] != 0) {
+			thiefTime();
+		}
+		/* 丘比特行动 */
+		if (initRoleCount[Role.CUPID] != 0) {
+			cupidTime();
+		}
+	}
+
+	public int DayAndNight() {
+		int result = Event.ON_GAME;
+
+		/* 天黑请闭眼 */
+		int today = action.today();
+		if (today != 1)
+			sendAll(new Message(Event.SERVER_CLOSE_EYES, today));
+
+		/* 预言家行动 */
+		if (initRoleCount[Role.SEER] != 0) {
+			seerTime();
+		}
+
+		/* 狼人行动 */
+		int[] killIds = wolfTime();
+
+		/* 女巫行动 */
+		if (initRoleCount[Role.WITCH] != 0) {
+			witchTime(killIds);
+		}
+
+		/* 天亮请睁眼 */
+		sleep(Config.SLEEP_TIME);
+		action.nextDay();
+		sendAll(new Message(Event.SERVER_OPEN_EYES, action.today()));
+
+		/* 昨夜死亡名单公布 */
+		sleep(Config.SLEEP_TIME);
+		List<Player> deadPlayers = action.getDeadPlayers(action.today() - 1);
+		int[] deads = new int[player_max + 1];
+		for (Player p : deadPlayers) {
+			int id = p.getId();
+			int status = p.getRole().getStatus();
+			deads[id] = status;
+			action.send(id, new Message(Event.SERVER_YOU_ARE_DEAD, status));
+		}
+		sendAll(new Message(Event.SERVER_NIGHT_DEATH, deads));
+
+		/* 游戏结束判断 */
+		result = action.isGameOver();
+		if (result != Event.ON_GAME)
+			return result;
+
+		/* 遗言 */
+		if (hasLastWords)
+			lastWordsTime();
+
+		/* 猎人行动 */
+		if (initRoleCount[Role.HUNTER] != 0) {
+			hunterTime(Role.KILLED);
+
+			result = action.isGameOver();
+			if (result != Event.ON_GAME)
+				return result;
+		}
+
+		/* 警长行动 */
+		sheriffTime();
+
+		/* 村民行动 */
+		sleep(Config.SLEEP_TIME);
+		villagerTime();
+
+		result = action.isGameOver();
+		if (result != Event.ON_GAME)
+			return result;
+
+		/* 猎人行动 */
+		if (initRoleCount[Role.HUNTER] != 0) {
+			hunterTime(Role.EXECUTED);
+
+			result = action.isGameOver();
+			if (result != Event.ON_GAME)
+				return result;
+		}
+
+		/* 警长行动 */
+		sheriffTime();
+		return result;
+	}
+
+	// ////////////////////////////////////////////////////////////////////////////
+
+	/**
+	 * 分配角色
+	 * 
+	 * @param roleId
+	 *            角色id
+	 */
+	private void distributeRole(int roleId, List temp) {
+		int count = initRoleCount[roleId];
+		if (count == 0)
+			return;
+		int playerId;
+		while (count != 0) {
+			do {
+				playerId = random.nextInt(player_max) + 1;
+			} while (temp.contains(playerId));
+			temp.add(playerId);
+			action.distribution(playerId, roleId);
+			display(playerId + "," + Role.toRoleName(roleId));
+			count--;
+		}
+
+	}
+
+	private void thiefTime() {
+		sendAll(new Message(Event.SERVER_THIEF_START, waitingRoles));
+		Player tp = action.getPlayersByRole(Role.THIEF).get(0);
+		int thiefId = tp.getId();
+		String message = action.recv(thiefId);
+		// 盗贼换角色
+		if (message != "") {
+			display("收到 " + thiefId + ":" + message);
+			JsonArray array = parser.parse(message).getAsJsonArray();
+			byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+			if (recvEvent == Event.CLIENT_THIEF_ACTION) {
+				int i = gson.fromJson(array.get(1), int.class);
+				if (i == 0) {
+					int roleId = Role.VILLAGER;
+					action.theifAction(tp, roleId);
+					initRoleCount[roleId]++;
+					initRoleCount[Role.THIEF] = 0;
+				} else {
+					i = i - 1;
+					int roleId = waitingRoles[i];
+					action.theifAction(tp, roleId);
+					initRoleCount[roleId]++;
+					initRoleCount[Role.THIEF] = 0;
+				}
+			}
+		} else {
+			int roleId = Role.VILLAGER;
+			action.theifAction(tp, roleId);
+			initRoleCount[roleId]++;
+			initRoleCount[Role.THIEF] = 0;
+		}
+		sendAll(new Message(Event.SERVER_THIEF_OVER, action.getPlayer(thiefId)
+				.getRole()));
+	}
+
+	private void cupidTime() {
+		sendAll(new Message(Event.SERVER_CUPID_START));
+		Player cp = action.getPlayersByRole(Role.CUPID).get(0);
+		int cupidId = cp.getId();
+		String message = action.recv(cupidId);
+		int firstId = 0, secondId = 0;
+		// 丘比特连情侣
+		if (message != "") {
+			display("收到 " + cupidId + ":" + message);
+			JsonArray array = parser.parse(message).getAsJsonArray();
+			byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+			if (recvEvent == Event.CLIENT_CUPID_ACTION) {
+				firstId = gson.fromJson(array.get(1), int.class);
+				secondId = gson.fromJson(array.get(2), int.class);
+				action.cupidAction(cp, firstId, secondId);
+			}
+		}
+		sendAll(new Message(Event.SERVER_CUPID_OVER, firstId, secondId));
+	}
+
+	private void seerTime() {
+		sendAll(new Message(Event.SERVER_SEER_START));
+		Player sp = action.getPlayersByRole(Role.SEER).get(0);
+		int toSeeId = 0;
+		int roleId = 0;
+		if (sp.getRole().getStatus() == Role.ALIVE) {
+			int seerId = sp.getId();
+			String message = action.recv(seerId);
+			// 预言家验人
+			if (message != "") {
+				display("收到 " + seerId + ":" + message);
+				JsonArray array = parser.parse(message).getAsJsonArray();
+				byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+				if (recvEvent == Event.CLIENT_SEER_ACTION) {
+					toSeeId = gson.fromJson(array.get(1), int.class);
+					roleId = action.seerAction(sp, toSeeId);
+				}
+			}
+		} else {
+			sleep(random.nextInt(Config.TIMER_OUT));
+		}
+
+		sendAll(new Message(Event.SERVER_SEER_OVER, toSeeId, roleId));
+	}
+
+	private int[] wolfTime() {
+		int[] killIds = { 0 };
+		sendAll(new Message(Event.SERVER_WOLF_START));
+		while (true) {
+			voteInfos = new boolean[player_max + 1][player_max + 1];
+			for (int i = 0; i <= player_max; i++) {
+				for (int j = 0; j <= player_max; j++)
+					if (voteInfos[i][j])
+						voteInfos[i][j] = false;
+			}
+			recvAliveWolf(Event.CLIENT_WOLF_ACTION);
+			int true_count = 0;
+			int toKillId = 0;
+			for (int i = 1; i <= player_max; i++) {
+				if (voteInfos[0][i]) {
+					true_count++;
+					toKillId = i;
+				}
+			}
+			if (true_count > 1)
+				sendAll(new Message(Event.SERVER_WOLF_ATTEMP_OVER, -1));
+			else if (true_count == 1) {
+				Player wp = action.getPlayersByRole(Role.WOLF).get(0);
+				killIds = action.wolfAction(wp, toKillId);
+				sendAll(new Message(Event.SERVER_WOLF_ATTEMP_OVER, killIds[0]));
+				if (hasLastWords) {
+					for (int id : killIds)
+						deadSpks.add(id);
+				}
+				break;
+			} else if (true_count == 0) {
+				sendAll(new Message(Event.SERVER_WOLF_ATTEMP_OVER, 0));
+			}
+		}
+		sendAll(new Message(Event.SERVER_WOLF_OVER));
+		return killIds;
+	}
+
+	private void witchTime(int[] killIds) {
+		// 女巫救人
+		sendAll(new Message(Event.SERVER_WITCHSAVE_START, killIds[0]));
+		Player wip = action.getPlayersByRole(Role.WITCH).get(0);
+		int witchId = wip.getId();
+		if (wip.getRole().getStatus() == Role.ALIVE || killIds[0] == witchId
+				|| killIds[1] == witchId) {
+			String message = action.recv(witchId);
+			if (message != "") {
+				display("收到 " + witchId + ":" + message);
+				JsonArray array = parser.parse(message).getAsJsonArray();
+				byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+				if (recvEvent == Event.CLIENT_WITCHSAVE_ACTION) {
+					int playerId = gson.fromJson(array.get(1), int.class);
+					if (playerId != 0) {
+						int[] surviveIds = action
+								.witchSaveAction(wip, playerId);
+						if (surviveIds != null) {
+							sendAll(new Message(Event.SERVER_WITCHSAVE_OVER,
+									surviveIds[0]));
+							if (hasLastWords) {
+								for (int id : surviveIds)
+									deadSpks.remove((Integer) id);
+							}
+						} else
+							sendAll(new Message(Event.SERVER_WITCHSAVE_OVER, 0));
+					}
+				}
+			}
+		} else {
+			sleep(random.nextInt(Config.TIMER_OUT));
+		}
+		// 女巫毒人
+		sendAll(new Message(Event.SERVER_WITCHPOISON_START));
+		if (wip.getRole().getStatus() == Role.ALIVE || killIds[0] == witchId
+				|| killIds[1] == witchId) {
+			String message = action.recv(witchId);
+			if (message != "") {
+				display("收到 " + witchId + ":" + message);
+				JsonArray array = parser.parse(message).getAsJsonArray();
+				byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+				if (recvEvent == Event.CLIENT_WITCHPOISON_ACTION) {
+					int playerId = gson.fromJson(array.get(1), int.class);
+					if (playerId != 0) {
+						int[] deadIds = action.witchPoisonAction(wip, playerId);
+						if (deadIds != null) {
+							sendAll(new Message(Event.SERVER_WITCHPOISON_OVER,
+									deadIds[0]));
+							if (hasLastWords) {
+								for (int id : deadIds)
+									deadSpks.add(id);
+							}
+						} else
+							sendAll(new Message(Event.SERVER_WITCHPOISON_OVER,
+									0));
+					}
+				}
+			}
+		} else {
+			sleep(random.nextInt(Config.TIMER_OUT));
+		}
+	}
+
+	private void villagerTime() {
+		List<Player> alivePlayers = action.getAlivePlayers();
+		voteInfos = new boolean[player_max + 1][player_max + 1];
+		for (int i = 0; i <= player_max; i++) {
+			for (int j = 0; j <= player_max; j++)
+				if (voteInfos[i][j])
+					voteInfos[i][j] = false;
+		}
+
+		sendAll(new Message(Event.SERVER_VILLAGER_START));
+
+		for (Player p : alivePlayers) {
+			int id = p.getId();
+			voteInfos[0][id] = true;// 所有存活的玩家都作为候选人
+		}
+		// 发言
+		// 投票
+		Player sheriff = action.getSheriff();
+		int sheriffId = 0;
+		if (sheriff != null)
+			sheriffId = sheriff.getId();
+		Stack<Integer> maxVoterIds = new Stack<Integer>(); // 最多票的ids
+		int equalCount = 0;
+		do {
+			for (int id = 1; id <= player_max; id++) {
+				if (voteInfos[0][id]) {
+					sendAll(new Message(Event.SERVER_SPEECH_START, id));
+					String message = action.recv(id);
+					if (message != "") {
+						display("收到 " + id + ":" + message);
+						JsonElement element = parser.parse(message);
+						if (element.isJsonArray()) {
+							JsonArray array = parser.parse(message)
+									.getAsJsonArray();
+							// 第1个字段是消息类型
+							byte event = gson
+									.fromJson(array.get(0), Byte.class);
+							if (event == Event.CLIENT_SPEECH_OVER) {
+								display("玩家" + id + "发言完毕");
+							}
+						}
+					}
+				}
+			}// end for
+
+			maxVoterIds.clear();
+			sendAll(new Message(Event.SERVER_VOTE_START, voteInfos[0]));
+
+			recvAlive(Event.CLIENT_VOTE_ACTION);
+
+			int max = -1;
+			for (int toVoteId = 1; toVoteId <= player_max; toVoteId++) {
+				if (voteInfos[0][toVoteId]) {
+					int count = 0;
+					for (int voteId = 1; voteId <= player_max; voteId++) {
+						if (voteInfos[voteId][toVoteId]) {
+							if (voteId == sheriffId)
+								count += 2;
+							else
+								count++;
+						}
+					}
+					if (count > max) {
+						max = count;
+						maxVoterIds.clear();
+						maxVoterIds.push(toVoteId);
+					} else if (count == max) {
+						maxVoterIds.push(toVoteId);
+					}
+				}
+			}
+			display("公布投票结果");
+			String text = "\n";
+			for (int i = 0; i <= player_max; i++) {
+				for (int j = 0; j <= player_max; j++)
+					if (voteInfos[i][j])
+						text += "1 ";
+					else
+						text += "0 ";
+				text += "\n";
+			}
+			display(text);
+
+			sendAll(new Message(Event.SERVER_VOTE_OVER, voteInfos));
+			// 平局，清空，平局人作为新的候选人
+			if (maxVoterIds.size() > 1) {
+				for (int i = 0; i <= player_max; i++)
+					for (int j = 0; j <= player_max; j++)
+						if (voteInfos[i][j])
+							voteInfos[i][j] = false;
+				for (int maxId : maxVoterIds) {
+					voteInfos[0][maxId] = true;
+				}
+				equalCount++;
+				display("平局次数:" + equalCount);
+				if (equalCount >= Config.LAST_WORDS_COUNT)
+					break;
+			}
+			text = "";
+			for (int maxId : maxVoterIds) {
+				text = text + " 玩家" + maxId;
+			}
+			display("票数最多：" + text);
+
+		} while (maxVoterIds.size() > 1);
+		int[] executeIds = { 0 };
+		if (equalCount >= 3)
+			sendAll(new Message(Event.SERVER_EXECUTE_ID, executeIds));
+		else {
+			int executeId = maxVoterIds.pop();
+			executeIds = action.viliagerAction(executeId);
+			sendAll(new Message(Event.SERVER_EXECUTE_ID, executeIds));
+			action.send(executeIds[0], new Message(Event.SERVER_YOU_ARE_DEAD,
+					Role.EXECUTED));
+			if (executeIds.length > 1)
+				action.send(executeIds[0], new Message(
+						Event.SERVER_YOU_ARE_DEAD, Role.SUICIDED));
+			if (hasLastWords) {
+				for (int id : executeIds)
+					deadSpks.add(id);
+				lastWordsTime();
+			}
+		}
+	}
+
+	private void hunterTime(int status) {
+		Player hp = action.getPlayersByRole(Role.HUNTER).get(0);
+		Hunter hunter = (Hunter) hp.getRole();
+		if (hunter.hasGun() && hunter.getStatus() == status) {
+			int hunterId = hp.getId();
+			sendAll(new Message(Event.SERVER_HUNTER_START, status));
+			String message = action.recv(hunterId);
+			if (message != "") {
+				display("收到 " + hunterId + ":" + message);
+				JsonArray array = parser.parse(message).getAsJsonArray();
+				byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+				if (recvEvent == Event.CLIENT_HUNTER_ACTION) {
+					int toHuntId = gson.fromJson(array.get(1), int.class);
+					int[] deadIds = action.hunterAction(hp, toHuntId);
+					if (deadIds != null) {
+						sendAll(new Message(Event.SERVER_HUNTER_OVER, deadIds));
+						action.send(deadIds[0], new Message(
+								Event.SERVER_YOU_ARE_DEAD, Role.HUNTED));
+						if (deadIds.length > 1)
+							action.send(deadIds[0], new Message(
+									Event.SERVER_YOU_ARE_DEAD, Role.SUICIDED));
+						if (hasLastWords) {
+							for (int id : deadIds)
+								deadSpks.add(id);
+							lastWordsTime();
+						}
+					}
+				}
+			}
+		}
+	}
+
+	private void sheriffTime() {
+		Player sheriff = action.getSheriff();
+		if (sheriff != null && sheriff.getRole().getStatus() != Role.ALIVE) {
+			sendAll(new Message(Event.SERVER_SHERIFF_START));
+			int sheriffId = sheriff.getId();
+			String message = action.recv(sheriffId);
+			if (message != "") {
+				display("收到 " + sheriffId + ":" + message);
+				JsonArray array = parser.parse(message).getAsJsonArray();
+				byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+				if (recvEvent == Event.CLIENT_SHERIFF_ACTION) {
+					int newSheriffId = gson.fromJson(array.get(1), int.class);
+					action.sheriffAction(sheriff, newSheriffId);
+					sendAll(new Message(Event.SERVER_SHERIFF_OVER, newSheriffId));
+				}
+			} else {
+				List<Player> alivePlayers = action.getAlivePlayers();
+				int newIndex = random.nextInt(alivePlayers.size());
+				int newSheriffId = alivePlayers.get(newIndex).getId();
+				action.sheriffAction(sheriff, newSheriffId);
+				sendAll(new Message(Event.SERVER_SHERIFF_OVER, newSheriffId));
+			}
+		}
+	}
+
+	private void lastWordsTime() {
+		for (int id : deadSpks) {
+			sendAll(new Message(Event.SERVER_SPEECH_START, id));
+			String message = action.recv(id);
+			if (message != "") {
+				display("收到 " + id + ":" + message);
+				JsonElement element = parser.parse(message);
+				if (element.isJsonArray()) {
+					JsonArray array = parser.parse(message).getAsJsonArray();
+					// 第1个字段是消息类型
+					byte event = gson.fromJson(array.get(0), Byte.class);
+					if (event == Event.CLIENT_SPEECH_OVER) {
+						display("玩家" + id + "发言完毕");
+					}
+				}
+			}
+			deadSpeakerCount++;
+			if (deadSpeakerCount >= Config.LAST_WORDS_COUNT) {
+				hasLastWords = false;
+				break;
+			}
+		}
+		deadSpks.clear();
+	}
+
+	// /////////////////////////////////////////////////////////////////////////////
+	private void sleep(int minutes) {
+		try {
+			Thread.sleep(minutes * 1000);
+		} catch (InterruptedException e1) {
+			e1.printStackTrace();
+		}
+	}
+
+	private void sendAll(Message msg) {
+		ExecutorService service = Executors.newFixedThreadPool(player_max);
+		for (int id = 1; id <= player_max; id++)
+			service.execute(new OutputRunnable(id, msg));
+		service.shutdown();
+		try {
+			service.awaitTermination(20, TimeUnit.SECONDS);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void recvAlive(byte event) {
+		List<Player> alivePlayers = action.getAlivePlayers();
+		ExecutorService service = Executors.newFixedThreadPool(alivePlayers
+				.size());
+		for (Player p : alivePlayers)
+			service.execute(new InputRunnable(p.getId(), event));
+		service.shutdown();
+		try {
+			service.awaitTermination(20, TimeUnit.SECONDS);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+	}
+
+	private void recvAliveWolf(byte event) {
+		List<Player> aliveWolves = action.getPlayersByRole(Role.WOLF);
+		for (Player wolf : aliveWolves)
+			if (wolf.getRole().getStatus() != Role.ALIVE)
+				aliveWolves.remove(wolf);
+		ExecutorService service = Executors.newFixedThreadPool(aliveWolves
+				.size());
+		for (Player p : aliveWolves)
+			service.execute(new InputRunnable(p.getId(), event));
+		service.shutdown();
+		try {
+			service.awaitTermination(20, TimeUnit.SECONDS);
+		} catch (InterruptedException e) {
+			e.printStackTrace();
+		}
+	}
+
+	class InputRunnable implements Runnable {
+		private int id;
+		private byte waitEvent;
+
+		public InputRunnable(int playerId, byte event) {
+			id = playerId;
+			this.waitEvent = event;
+		}
+
+		// 还没考虑线程安全问题
+		@Override
+		public void run() {
+			String message = action.recv(id);
+			if (waitEvent == Event.CLIENT_ELECTION_ACTION) {
+				// 警长报名
+				if (message != "") {
+					JsonArray array = parser.parse(message).getAsJsonArray();
+					byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+					if (recvEvent == waitEvent) {
+						display("收到 " + id + ":" + message);
+						boolean choice = gson.fromJson(array.get(1),
+								boolean.class);
+						if (choice) {
+							voteInfos[0][id] = true;
+							Message msg = new Message(
+									Event.SERVER_ELECTION_OVER, id);
+							sendAll(msg);
+						}
+					}
+				}
+			} else if (waitEvent == Event.CLIENT_VOTE_ACTION) {
+				// 所投候选人
+				if (message != "") {
+					JsonArray array = parser.parse(message).getAsJsonArray();
+					byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+					if (recvEvent == waitEvent) {
+						display("收到 " + id + ":" + message);
+						int toVoteId = gson.fromJson(array.get(1), int.class);
+						if (voteInfos[0][toVoteId]) {
+							action.vote(id, toVoteId);
+							voteInfos[id][toVoteId] = true;
+						}
+					}
+				}
+			} else if (waitEvent == Event.CLIENT_WOLF_ACTION) {
+				// 狼人杀人
+				if (message != "") {
+					JsonArray array = parser.parse(message).getAsJsonArray();
+					byte recvEvent = gson.fromJson(array.get(0), Byte.class);
+					if (recvEvent == waitEvent) {
+						display("收到 " + id + ":" + message);
+						int toVoteId = gson.fromJson(array.get(1), int.class);
+						if (!voteInfos[0][toVoteId])
+							voteInfos[0][toVoteId] = true;
+						voteInfos[id][toVoteId] = true;
+						sendAll(new Message(Event.SERVER_WOLF_ATTEMP_START, id,
+								toVoteId));
+					}
+				}
+			}
+		}// end run
+	}
+
+	class OutputRunnable implements Runnable {
+		private int id;
+		private Message msg;
+
+		public OutputRunnable(int playerId, Message message) {
+			this.id = playerId;
+			this.msg = message;
+		}
+
+		@Override
+		public void run() {
+			action.send(id, msg);
+		}
+
+	}
+
+}

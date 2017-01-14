@@ -1,0 +1,59 @@
+K 25
+svn:wc:ra_dav:version-url
+V 62
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model
+END
+Thief.java
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Thief.java
+END
+Role.java
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Role.java
+END
+Cupid.java
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Cupid.java
+END
+Hunter.java
+K 25
+svn:wc:ra_dav:version-url
+V 74
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Hunter.java
+END
+Villager.java
+K 25
+svn:wc:ra_dav:version-url
+V 76
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Villager.java
+END
+Wolf.java
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Wolf.java
+END
+Player.java
+K 25
+svn:wc:ra_dav:version-url
+V 74
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Player.java
+END
+Seer.java
+K 25
+svn:wc:ra_dav:version-url
+V 72
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Seer.java
+END
+Witch.java
+K 25
+svn:wc:ra_dav:version-url
+V 73
+/svn/!svn/ver/11/trunk/code/TCPServer/src/com/langrensha/model/Witch.java
+END
